@@ -5,6 +5,9 @@ using System.Data.Common;
 using System.Threading.Tasks;
 using System.Diagnostics;
 using System.IO;
+using MySql.Data.MySqlClient;
+using Demon;
+using System.Reflection.PortableExecutable;
 
 namespace MetadataDemon
 {
@@ -32,57 +35,43 @@ namespace MetadataDemon
 
                     while (true)
                     {
-                        //Сообщение для ответа клиенту
-                        string message = "ERROR";
-
-                        //Номер команды и её параметры
-                        string numberCommand = "";
-                        string parameters = "";
-
                         Socket handler = listenSocket.AcceptAsync().Result;
 
-                        using (NetworkStream netstream = new NetworkStream(handler))
-                        {
+                        NetworkStream netstream = new NetworkStream(handler);
+                        
                             BinaryReader reader = new BinaryReader(netstream);
 
-                            int fileNameLength = reader.ReadInt32();
-                            byte[] fileNameBytes = reader.ReadBytes(fileNameLength);
-                            string fileName = Encoding.UTF8.GetString(fileNameBytes);
-
-                            FileStream fs = new FileStream("D:\\temp\\" + fileName, FileMode.Create);
-
-                            int fileLength = reader.ReadInt32();
-                            byte[] fileBytes = new byte[fileLength];
-                            int bytesRead = 0;
-                            Console.WriteLine(fileNameLength + "\n" + fileName + "\n" + fileLength + "\n");
-                            while (bytesRead < fileLength)
+                        reader.ReadBytes(1);
+                        int numberCommand = int.Parse(Encoding.UTF8.GetString(reader.ReadBytes(1)));
+                        Console.WriteLine(numberCommand);
+                        Console.ReadKey();
+                        if (numberCommand == 1)
                             {
-                                Console.WriteLine(bytesRead);
-                                bytesRead += netstream.Read(fileBytes, bytesRead, fileLength - bytesRead);
+                                int fileNameLength = reader.ReadInt32();
+                                byte[] fileNameBytes = reader.ReadBytes(fileNameLength);
+                                string fileName = Encoding.UTF8.GetString(fileNameBytes);
+
+
+
+                                int fileLength = reader.ReadInt32();
+                                byte[] fileBytes = new byte[fileLength];
+                                int bytesRead = 0;
+                                Console.WriteLine(fileNameLength + "\n" + fileName + "\n" + fileLength + "\n");
+                                
+                                Task.Run(()=>RecieveFile(netstream, fileName, fileLength));
+                                
                             }
-                            fs.Write(fileBytes);
-                            fs.Close();
-                        }
-                        
-                        byte[] data = Encoding.UTF8.GetBytes("READY");
-                        if (handler.Available == 0)
-                        {
-                            Console.WriteLine("OK");
-                            handler.Send(data);
-                        }
-                        //RecieveFile(handler);
+                            else if(numberCommand == 2)
+                            {
+
+                            }
 
                         //Цветовое офрмление серверной части, для наглядности обмена данными
                         Console.ForegroundColor = ConsoleColor.Blue;
                         Console.Write(DateTime.Now.ToShortTimeString() + ": ");
                         Console.ForegroundColor = ConsoleColor.Green;
-                        Console.Write("<Response Server> : " + data);
-                        
+                        Console.Write("<Response Server> : ");
                         Console.WriteLine();
-
-                        // закрываем сокет
-                        handler.Shutdown(SocketShutdown.Both);
-                        handler.Close();
                     }
                 }
                 catch (Exception ex)
@@ -93,18 +82,57 @@ namespace MetadataDemon
             }
         }
 
-        static async Task<string> RecieveFile(Socket socket, string filename)
+        static async Task<string> RecieveFile(NetworkStream netstream, string filename, int fileLength)
         {
-            NetworkStream ns = new NetworkStream(socket);
-            FileStream fs = new FileStream("D:\\temp\\"+filename, FileMode.Create);
-            ns.CopyTo(fs);
+            int bytesRead = 0;
+            byte[] fileBytes = new byte[fileLength];
 
-            Console.WriteLine("Save file: D:\\temp\\" + filename);
+            string messages = "ERROR";
 
-            ns.Close();
-            fs.Close();
+            try
+            {
+                //Считываем байты файла из потока
+                while (bytesRead < fileLength)
+                {
+                    Console.WriteLine(bytesRead);
+                    bytesRead += netstream.Read(fileBytes, bytesRead, fileLength - bytesRead);
+                }
+                BinaryReader reader = new BinaryReader(netstream);
 
-            return "FILERECIEVED";
+                int id_messages = reader.ReadInt32();
+                
+                if (bytesRead == fileLength)
+                {
+                    MySqlConnection connection = DBUtils.GetDBConnection();
+                    connection.Open();
+
+                    string sql_command = "INSERT INTO server_chats.files (filename, filedata, id_message) VALUES (@filename, @filedata, @id_messages)";
+
+                    MySqlCommand command = connection.CreateCommand();
+                    command.CommandText = sql_command;
+
+                    command.Parameters.AddWithValue("@filename", filename);
+                    command.Parameters.AddWithValue("@filedata", fileBytes);
+                    command.Parameters.AddWithValue("@id_messages", id_messages);
+
+                    command.ExecuteNonQuery();
+                    connection.Close();
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine(ex.Message);
+                return "ERROR";
+            }
+            finally
+            {
+                byte[] data = Encoding.UTF8.GetBytes("READY");
+
+                netstream.Socket.Send(data);
+                netstream.Close();
+                messages = "FILERECIEVED";
+            }
+            return messages;
         }
     }
 }
